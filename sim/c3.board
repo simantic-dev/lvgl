@@ -1,0 +1,12 @@
+// ESP32-C3 + ILI9341 TFT and XPT2046 touch on SPI2 (peers/ili9341.py, one peer for both chip selects, as the
+// crosspoint fork's x4_spi.py does for its SD card and panel). Pads: SCLK 6, MOSI 7, MISO 2, TFT CS 10, touch CS 3
+// (both software GPIO), DC 4, RST 5. Peer lines: 0 = TFT CS, 1 = D/CX, 2 = RESET, 3 = touch CS.
+tft: SPI.ScriptedSpiSlave @ spi2
+    file: "sim/peers/ili9341.py"
+    numberOfGpios: 4
+
+gpio:
+    10 -> tft@0
+    4 -> tft@1
+    5 -> tft@2
+    3 -> tft@3

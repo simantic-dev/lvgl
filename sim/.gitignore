@@ -1,0 +1,4 @@
+out/
+fw/build-*/
+fw/dependencies.lock
+flash-*.bin

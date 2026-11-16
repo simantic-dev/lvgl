@@ -1,3 +1,90 @@
+## This fork: LVGL's demos running on a simulated ESP32-C3
+
+Simantic's fork of LVGL, kept as a simulation showcase. `sim/` builds LVGL's own demos (`lv_demo_widgets`,
+`lv_demo_music`, `lv_demo_benchmark`) as an ESP-IDF 5.4.4 project and runs the real firmware image on a simulated
+ESP32-C3 (released `sim` 0.10.1) with a simulated ILI9341 SPI panel and a simulated XPT2046 touch controller. Every
+picture below is a frame of the panel peer's frame memory from a real run (240x320 RGB565, shown 320x240 landscape),
+not a mock-up. The LVGL sources are unchanged; nothing is offered back or posted upstream. The only code added is under
+`sim/` (a 130-line ESP-IDF host app, `sim/fw/main/main.c`, and the peers and scripts around it).
+
+| Profile | Analytics (tap) | Shop (tap) | Shop, scrolled (drag) | Profile (tap) |
+| --- | --- | --- | --- | --- |
+| ![](sim/screenshots/widgets-1-profile.png) | ![](sim/screenshots/widgets-2-analytics.png) | ![](sim/screenshots/widgets-3-shop.png) | ![](sim/screenshots/widgets-4-shop-scrolled.png) | ![](sim/screenshots/widgets-5-profile-again.png) |
+
+Animated: [widgets](sim/screenshots/widgets.gif) (14 s of virtual time, 52 frames, touch-driven),
+[music player](sim/screenshots/music.gif) (20 s), [benchmark](sim/screenshots/benchmark.gif) (first 40 s).
+The "FPS / CPU / render + flush" overlay is LVGL's own performance monitor, measured by the firmware on the simulated
+clock.
+
+```sh
+DEMO=widgets sim/build.sh   # DEMO=widgets|music|benchmark; needs ESP-IDF 5.4.x (~/.espressif/v5.4.4); about 1 min
+DEMO=widgets sim/run.sh     # SECS=14: boots sim/flash-esp32c3-widgets.bin, writes PNGs to sim/out/, assembles the GIF
+```
+
+The merged flash images (`sim/flash-esp32c3-<demo>.bin`) are build output and are not committed. `sim/run.sh` needs
+`sim` on PATH, python3 and Pillow (for the GIF).
+
+**What runs** (`sim` 0.10.1 build ccc73c89, ESP-IDF v5.4.4, 2026-11-16):
+
+| Part | In the simulation |
+| --- | --- |
+| Firmware | ESP-IDF project `sim/fw`, LVGL as a component (`sim/fw/components/lvgl` is a symlink to this tree), `CONFIG_LV_USE_STDLIB_MALLOC_CLIB`, 16 bpp, partial render mode with a 320x30 RGB565 buffer, SPI at 40 MHz with DMA, software chip selects. Booted through the built-in C3 mask ROM and the IDF bootloader |
+| ESP32-C3 | released `sim ESP32-C3` model, board file `sim/c3.board` |
+| Panel | `sim/peers/ili9341.py`: a vendored copy of sim-fixtures' `peers/spi/ili9341.py` (ILI9341 datasheet V1.11; CASET/PASET/RAMWR, MADCTL MV, COLMOD, sleep/reset timing diagnostics, 240x320 frame memory). Fork addition: snapshots the frame memory to numbered raw files when it changed and 100 ms of virtual time passed (`ILI9341_SEQ_DIR`) |
+| Touch | same peer, a second chip select (GPIO3): an XPT2046-style controller answering 0xB1 (pressure), 0xD1 (X), 0x91 (Y) with 12-bit values. MODELED SIMPLIFICATION: the finger is a table of segments at fixed virtual times (`TOUCH_SCRIPT`), raw value = pixel scaled to 0..4095 with no calibration offset or noise; the pen-IRQ pin is not modelled (the firmware polls pressure every LVGL indev read) |
+| SPI2 bus | one peer for both chip selects, as the crosspoint fork does for its SD card and panel. MODELED SIMPLIFICATION, see gaps 1 and 4 |
+| Display colours | the firmware sets MADCTL `0x28` (MV, BGR) as a real ILI9341 board does; the peer stores the words as sent, so the PNGs are the RGB565 words the firmware wrote (colours look right) |
+
+System graph (`sim graph --scenario sim/scenario.yaml`):
+
+```mermaid
+flowchart LR
+  lvgl["lvgl<br/>ESP32-C3"]
+  lvgl_flashdev(["flashdev<br/>SPI.Micron_MT25Q"])
+  lvgl -- "spi1" --- lvgl_flashdev
+  lvgl_tft(["tft<br/>ILI9341 + XPT2046, SPI.ScriptedSpiSlave"])
+  lvgl -- "spi2" --- lvgl_tft
+```
+
+**Configurations tried** (measured on this machine, load average 7 to 10 during the runs, so wall times are upper bounds):
+
+| Configuration | Result |
+| --- | --- |
+| ESP32-C3, widgets demo, touch script, 14 s virtual | PASS (`sim/run.sh`): LVGL up at 0.80 s virtual; 277 RAMWR (panel window writes); 53 snapshots, all distinct; Profile to Analytics (tap at 2.0 s), Shop (4.5 s), Shop scrolled (drag 7.0 to 7.6 s), Profile (10.5 s) seen in the frames; 15.6 s wall. LVGL overlay: 30 FPS, 20 to 36 % CPU in the settled screens, 25 FPS / 69 % CPU while the Shop chart scrolls |
+| ESP32-C3, music demo (auto-play), 20 s virtual | PASS: splash, then the player with the cover and spectrum ring; 578 RAMWR; 83 snapshots, 67 distinct; 49.4 s wall. The demo is laid out for larger panels: at 320x240 the track title and the controls are partly clipped by the panel edge (LVGL's layout, not a capture fault) |
+| ESP32-C3, benchmark demo, 40 s virtual | PARTIAL: scenes "Empty screen", "Multiple rectangles", "Rotated ARGB images", "Containers with opa" reached, 4871 RAMWR, 46.6 s wall. The final results table was not reached within 40 s; how long the full run takes is `unverified` |
+| ESP32-S3, same source, same board file | not working: see gap 1. The panel peer receives SPI bytes but no GPIO edges (DC, RESET), so the init commands are mis-decoded (`DIAG unknown_command: command 0x3F`, `RAMWR while the panel is in sleep`) and no frame is produced |
+| ESP32 (classic), same source | not working: `--frames --frames-only spi` shows no SPI transaction at all after the firmware's "LVGL demo started" (pins HSPI 14/13, CS 15); not root-caused, `unverified` whether it is the model or the pin set |
+| First attempt on C3: esp_lcd panel IO with the SPI block's own chip select | not working: the peer saw one select edge at the first byte and never a deselect, so it never wrote a frame; software chip selects (GPIO pads) work |
+
+**Gaps, with the evidence** (engine or model side; not changed here, no issues filed):
+1. **ESP32-S3: `SPI.ScriptedSpiSlave` never receives `on_gpio` for its wired pads.** With `gpio: 4 -> tft@1`
+   (D/CX) and `5 -> tft@2` (RESET) the same firmware drives the pads (`--trace-out` logs the pad edges) and a
+   `Scripted.ScriptedGpioPeer` wired to the same pads gets every edge (`GP 1 True 720000`, ...), but the panel peer's
+   `on_gpio` printed nothing in a 1.1 s run, so it decodes pixel data as commands. The identical firmware and board file on
+   ESP32-C3 delivers the edges. Tried pads 8/9/10 and 4/5/10, hardware and software CS: same. Hence this fork runs on the C3.
+2. **ESP32-C3 has no `UART.ScriptedUartPeer`** (`build error: ts: no usable registration` for `uart0` and `uart1`; it
+   is accepted on ESP32 and ESP32-S3), so touch could not be a UART stand-in and is an XPT2046 on the SPI peer instead.
+3. **Peer pad events are time-quantised.** Four consecutive DC edges in `on_gpio` carry the same `ctx.now_us`
+   (`GP 1 True 720000`, `GP 1 False 720000`, ...): the order is kept, the time is the chunk's. Not a problem for
+   decoding here, but timing derived from pad edges inside one chunk is not available.
+4. **The hardware chip select of the C3's SPI block is not mirrored to peers** (one `on_select` at the first byte, no
+   `on_deselect`), which is why the firmware drives CS from GPIO. `unverified` whether that is intended.
+5. The 0.10.1 C3 model ran the 14 s widgets run in about 1.1x real time on a loaded host and the 20 s music run in
+   about 2.5x; no guest-side profile was taken (`unverified` what bounds the music run).
+
+Build notes: ESP-IDF 5.4.4 from the existing install (nothing is downloaded; no component-registry packages are used
+because the LVGL port code is the ~130 lines in `sim/fw/main/main.c`). Each build dir is about 270 MB, ignored by git.
+`sim/build.sh` uses `bash` and sources `export.sh`; run it under `lockf` on a shared machine.
+
+**Licence.** LVGL is MIT: `LICENCE.txt` reads "MIT licence, Copyright (c) 2025 LVGL Kft" and grants use, copy, modify,
+merge, publish, distribute, sublicense and sell, provided the copyright and permission notice stay in all copies.
+Third-party code and assets keep their own licences (`COPYRIGHTS.md`). Added files under `sim/` are offered under the
+same MIT licence; `sim/peers/ili9341.py` derives from Simantic's sim-fixtures peer. ESP-IDF (Apache-2.0) is linked into
+the flash images the build produces.
+
+---
+
 <p align="center">
   <a href="https://lvgl.io/docs" title="Documentation">Docs</a> •
   <a href="https://forum.lvgl.io" title="Community forum">Forum</a> •

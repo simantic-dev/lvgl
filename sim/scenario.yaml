@@ -1,0 +1,4 @@
+# One machine: the LVGL demo image on a simulated ESP32-C3 with an ILI9341 panel and XPT2046 touch peer (sim/c3.board).
+# Run with sim/run.sh; this file is for `sim check --scenario` and `sim graph --scenario`.
+machines:
+  lvgl: { mcu: ESP32-C3, elf: flash-esp32c3-widgets.bin, overlay: c3.board }
