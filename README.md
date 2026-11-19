@@ -1,3 +1,6 @@
+<!-- simantic-banner -->
+> **Run this firmware with no hardware.** [Simantic](https://simantic.com) simulates the whole board, peripherals, sensors and buses included. Try it free at **[simantic.com](https://simantic.com)**, or run it locally: `curl -fsSL https://simantic.com/install | sh`
+
 ## This fork: LVGL's demos running on a simulated ESP32-C3
 
 Simantic's fork of LVGL, kept as a simulation showcase. `sim/` builds LVGL's own demos (`lv_demo_widgets`,
